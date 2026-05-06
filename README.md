@@ -15,12 +15,18 @@ breakage, `mktemp` incompatibility, seccomp-blocked `mkfifo`, and missing
 | [bzip2](https://sourceware.org/bzip2/) | 1.0.8 | Make | — | libbz2.a |
 | [xz (liblzma)](https://tukaani.org/xz/) | 5.6.3 | Autotools | — | liblzma.a |
 | [PCRE2](https://github.com/PCRE2Project/pcre2) | 10.44 | Autotools | — | libpcre2-{8,16,32,posix}.a |
-| [zlib.pc](https://zlib.net/) | 1.2.11 | — | (sysroot) | zlib.pc for pkg-config |
+| [zlib.pc](https://zlib.net/) | 1.2.11 | — | (sysroot) | zlib.pc |
+| [OpenSSL](https://openssl.org/) | 3.0.15 | Configure | — | libssl.a, libcrypto.a |
+| [libcurl](https://curl.se/) | 8.11.0 | Autotools | OpenSSL | libcurl.a |
+| [libpng](http://libpng.org/) | 1.6.43 | CMake | zlib | libpng16.a |
+| [FreeType2](https://freetype.org/) | 2.13.3 | CMake | libpng, bzip2 | libfreetype.a |
 | [pixman](https://www.cairographics.org/) | 0.42.2 | Autotools | — | libpixman-1.a |
-| [Cairo](https://www.cairographics.org/) | 1.16.0 | Autotools | pixman, zlib | libcairo.a |
+| [Cairo](https://www.cairographics.org/) | 1.16.0 | Autotools | pixman, libpng, freetype2, zlib | libcairo.a |
 | [FFTW](https://fftw.org/) | 3.3.10 | Autotools | — | libfftw3.a, libfftw3f.a |
 | [GEOS](https://libgeos.org/) | 3.12.0 | CMake | — | libgeos.a, libgeos_c.a |
 | [GMP](https://gmplib.org/) | 6.3.0 | Autotools | — | libgmp.a |
+| [libxml2](https://gitlab.gnome.org/GNOME/libxml2) | 2.12.9 | CMake | — | libxml2.a |
+| [ANN](https://www.cs.umd.edu/~mount/ANN/) | 1.1.2 | Make | — | libann.a |
 | libmuslstubs | — | — | — | libmuslstubs.so |
 | libbacktrace_stub | — | — | — | libbacktrace_stub.so |
 
@@ -78,6 +84,172 @@ All scripts source `config.sh`, which reads these environment variables:
 | `JOBS` | `1` | Parallel make jobs (see Caveats) |
 
 ## Build Principles and Caveats
+
+### OpenSSL (perl Configure, not autotools)
+
+OpenSSL uses its own `./Configure` script (not autotools), which takes a
+target triplet directly. We use `linux-aarch64` with OHOS clang as CC.
+
+```bash
+./Configure linux-aarch64 --prefix="$PREFIX" --libdir=lib \
+  no-shared no-tests no-dso no-engine \
+  no-afalgeng no-async no-atexit \
+  CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+```
+
+**Caveats:**
+- **Target must be `linux-aarch64`, not `linux-generic64`.** The generic
+  target produces slower bignum code (no assembly optimizations). The
+  aarch64 target enables ARMv8-A cryptographic extensions and Montgomery
+  multiplication.
+- **`no-atexit` is critical.** Without it, OpenSSL registers `atexit()`
+  handlers that crash on OHOS because musl's `atexit` implementation
+  differs. This leaks some global state on unload but linking is safe.
+- **`no-engine` removes ENGINE support.** No hardware crypto accelerators
+  can be loaded. Only software crypto is available.
+- **`install_sw` vs `install`.** Use `make install_sw` to install only
+  the software (libraries + headers) without man pages and docs.
+- **Perl is required** for the Configure step. Install with `apt install perl`.
+
+---
+
+### libcurl (Autotools, depends on OpenSSL)
+
+Standard autotools cross-compile but with many features disabled to
+minimize dependencies. The critical dependency is OpenSSL for HTTPS.
+
+```bash
+../configure --host=aarch64-linux-gnu --prefix="$PREFIX" \
+  --with-openssl --disable-shared --enable-static \
+  --without-libpsl --without-quic --without-brotli \
+  --without-zstd --without-libidn2 --without-nghttp2 \
+  --without-nghttp3 --disable-ldap --disable-rtsp \
+  --disable-dict --disable-telnet --disable-tftp \
+  --disable-pop3 --disable-imap --disable-smtp \
+  --disable-gopher --disable-mqtt \
+  LIBS="-lpthread -ldl"
+```
+
+**Caveats:**
+- **HTTP/2 and HTTP/3 disabled.** No nghttp2/nghttp3 on OHOS. All
+  transfers are HTTP/1.1.
+- **No alt-svc, no brotli, no zstd.** Content-encoding negotiation is
+  limited to gzip/deflate (via zlib).
+- **Threading.** curl needs `-lpthread -ldl` explicitly because OHOS
+  doesn't auto-link these.
+- **config.sub must be patched** for `-ohos*` just like other autotools
+  builds.
+- **Many disabled protocols.** Only HTTP/HTTPS, FTP, FILE, and proxy
+  are enabled. SMTP, IMAP, POP3, LDAP, etc. are all disabled.
+
+---
+
+### libpng (CMake)
+
+Straightforward CMake build. Only the static library is built; tests
+and shared library are disabled.
+
+```bash
+cmake ../libpng-1.6.43 \
+  -DCMAKE_SYSTEM_NAME=Linux \
+  -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+  -DCMAKE_C_COMPILER="$CC" \
+  -DCMAKE_SYSROOT="$SYSROOT" \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF
+```
+
+**Caveats:**
+- **`libpng.a` is a symlink to `libpng16.a`.** Linking against `-lpng`
+  or `-lpng16` both work, but prefer `-lpng16` to be explicit.
+- **zlib is expected in the sysroot.** libpng's CMake finds zlib via
+  its CMake config or pkg-config. If zlib.pc was generated first,
+  CMake finds it automatically through `PKG_CONFIG_PATH`.
+- **No SIMD-optimized CRC.** libpng's `pngpriv.h` includes ARM NEON
+  optimizations if detected, but the cross-compile disables runtime
+  CPU detection. PNG decoding may be slower than on a native ARM build.
+
+---
+
+### FreeType2 (CMake)
+
+CMake build with optional features disabled to minimize dependencies.
+
+```bash
+cmake ../freetype-2.13.3 \
+  -DCMAKE_SYSTEM_NAME=Linux \
+  -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+  -DCMAKE_C_COMPILER="$CC" \
+  -DCMAKE_CXX_COMPILER="$CXX" \
+  -DCMAKE_SYSROOT="$SYSROOT" \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DFT_DISABLE_HARFBUZZ=ON -DFT_DISABLE_BROTLI=ON \
+  -DBUILD_SHARED_LIBS=OFF
+```
+
+**Caveats:**
+- **HarfBuzz shaping is disabled.** Complex text layout (Arabic, Indic
+  scripts) will not work correctly. For English/European text this is
+  fine, but for CJK or RTL scripts, text may render incorrectly.
+- **Brotli compression disabled.** WOFF2 font decompression won't work.
+  Only GZip-compressed fonts are supported.
+- **`FT_DISABLE_*` flags.** Disabling features reduces the library size
+  from ~2MB to ~600KB. Enable harfbuzz if you need complex text layout.
+- **Include path is `freetype2/`.** Consumers must add
+  `-I$PREFIX/include/freetype2` to find `ft2build.h`.
+
+---
+
+### libxml2 (CMake)
+
+CMake build with Python bindings and test programs disabled.
+
+```bash
+cmake ../libxml2-2.12.9 \
+  -DCMAKE_SYSTEM_NAME=Linux \
+  -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+  -DCMAKE_C_COMPILER="$CC" \
+  -DCMAKE_SYSROOT="$SYSROOT" \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DLIBXML2_WITH_PYTHON=OFF \
+  -DLIBXML2_WITH_TESTS=OFF \
+  -DLIBXML2_WITH_PROGRAMS=OFF \
+  -DBUILD_SHARED_LIBS=OFF
+```
+
+**Caveats:**
+- **No Python bindings.** The `libxml2-python` module is not built.
+  R's `XML` package doesn't need it (it uses the C API directly).
+- **No xmllint or test programs.** The CLI tools are not built.
+- **Iconv dependency.** libxml2 needs iconv for character encoding
+  conversion. OHOS sysroot provides a limited iconv; some encodings
+  (EBCDIC, ISO-2022-JP) may fail. UTF-8 and Latin-1 work fine.
+- **Include path is `libxml2/`.** Consumers need
+  `-I$PREFIX/include/libxml2` to find `libxml/parser.h`.
+
+---
+
+### ANN (custom Makefile, no autotools/CMake)
+
+ANN (Approximate Nearest Neighbor) uses a simple hand-written Makefile
+with a `Make-config` configuration file.
+
+```bash
+# Patch Make-config for cross-compilation, then:
+cd src && make -j1
+```
+
+**Caveats:**
+- **Vulnerable to compiler changes.** ANN's Makefile hardcodes `g++`
+  flags. The build script overrides `CXX` and `CFLAGS` explicitly.
+- **No configure step.** ANN has no autoconf/CMake, so there's no
+  platform detection. All platform-specific settings must be in the
+  Make-config override.
+- **Only static library.** ANN does not support building shared libs.
+- **Obsolete upstream.** ANN 1.1.2 is from 2010. No active maintenance.
+  The library is used only by R packages FNN and RANN.
+
+---
 
 ### bzip2 (Makefile, no autotools)
 
@@ -373,16 +545,22 @@ ohos-libs/
 ├── build-all.sh         # master build script
 ├── config.sh            # common toolchain configuration
 ├── scripts/
-│   ├── build-bzip2.sh   # bzip2 (Makefile)
-│   ├── build-xz.sh      # xz/liblzma (Autotools)
-│   ├── build-pcre2.sh   # PCRE2 8/16/32-bit (Autotools)
-│   ├── build-zlib-pc.sh # zlib.pc generator
-│   ├── build-pixman.sh  # pixman (Autotools)
-│   ├── build-cairo.sh   # Cairo image/pdf/svg (Autotools)
-│   ├── build-fftw.sh    # FFTW double+single (Autotools)
-│   ├── build-geos.sh    # GEOS (CMake)
-│   ├── build-gmp.sh     # GMP (Autotools)
-│   └── build-stubs.sh   # musl/backtrace stubs
+│   ├── build-bzip2.sh     # bzip2 (Makefile)
+│   ├── build-xz.sh        # xz/liblzma (Autotools)
+│   ├── build-pcre2.sh     # PCRE2 8/16/32-bit (Autotools)
+│   ├── build-zlib-pc.sh   # zlib.pc generator
+│   ├── build-openssl.sh   # OpenSSL (Configure)
+│   ├── build-curl.sh      # libcurl (Autotools)
+│   ├── build-pixman.sh    # pixman (Autotools)
+│   ├── build-libpng.sh    # libpng (CMake)
+│   ├── build-freetype.sh  # FreeType2 (CMake)
+│   ├── build-libxml2.sh   # libxml2 (CMake)
+│   ├── build-cairo.sh     # Cairo image/pdf/svg (Autotools)
+│   ├── build-fftw.sh      # FFTW double+single (Autotools)
+│   ├── build-geos.sh      # GEOS (CMake)
+│   ├── build-gmp.sh       # GMP (Autotools)
+│   ├── build-ann.sh       # ANN (Makefile)
+│   └── build-stubs.sh     # musl/backtrace stubs
 └── stubs/
     ├── musl_stubs.c     # stub for missing musl functions
     └── backtrace_stub.c # stub backtrace implementation
