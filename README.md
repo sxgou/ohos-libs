@@ -14,11 +14,11 @@ breakage, `mktemp` incompatibility, and missing `config.sub` entries.
 | [bzip2](https://sourceware.org/bzip2/) | 1.0.8 | Make | — |
 | [xz (liblzma)](https://github.com/tukaani-project/xz) | 5.6.3 | Autotools | — |
 | [PCRE2](https://github.com/PCRE2Project/pcre2) | 10.44 | Autotools | — |
-| [pixman](https://www.cairographics.org/releases/) | 0.42.2 | Autotools | — |
-| [GMP](https://gmplib.org/) | 6.3.0 | Autotools | — |
-| [FFTW](https://fftw.org/) | 3.3.10 | Autotools | — |
-| [Cairo](https://www.cairographics.org/) | 1.16.0 | Autotools | pixman, libpng, freetype2, zlib |
-| [GEOS](https://libgeos.org/) | 3.12.0 | CMake | — |
+| [pixman](docs/pixman.md) | 0.42.2 | Autotools | — |
+| [GMP](docs/gmp.md) | 6.3.0 | Autotools | — |
+| [FFTW](docs/fftw.md) | 3.3.10 | Autotools | — |
+| [Cairo](docs/cairo.md) | 1.16.0 | Autotools | pixman, libpng, freetype2, zlib |
+| [GEOS](docs/geos.md) | 3.12.0 | CMake | — |
 | zlib.pc | 1.2.11 | — | (from sysroot) |
 | libmuslstubs | — | — | — |
 | libbacktrace_stub | — | — | — |
@@ -94,6 +94,12 @@ ohos-libs/
 ├── README.md              # this file
 ├── build-all.sh           # master build script
 ├── config.sh              # common toolchain configuration
+├── docs/                  # per-library documentation
+│   ├── cairo.md
+│   ├── pixman.md
+│   ├── fftw.md
+│   ├── geos.md
+│   └── gmp.md
 ├── scripts/
 │   ├── build-bzip2.sh     # bzip2
 │   ├── build-xz.sh        # liblzma
