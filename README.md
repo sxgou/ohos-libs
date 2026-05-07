@@ -27,6 +27,7 @@ breakage, `mktemp` incompatibility, seccomp-blocked `mkfifo`, and missing
 | [GMP](https://gmplib.org/) | 6.3.0 | Autotools | — | libgmp.a |
 | [libxml2](https://gitlab.gnome.org/GNOME/libxml2) | 2.12.9 | CMake | — | libxml2.a |
 | [ANN](https://www.cs.umd.edu/~mount/ANN/) | 1.1.2 | Make | — | libann.a |
+| [ZeroMQ (libzmq)](https://zeromq.org/) | 4.3.5 | CMake (OHOS toolchain) | — | libzmq.so, libzmq.a |
 | libmuslstubs | — | — | — | libmuslstubs.so |
 | libbacktrace_stub | — | — | — | libbacktrace_stub.so |
 
@@ -64,6 +65,7 @@ bash scripts/build-pcre2.sh
 bash scripts/build-pixman.sh
 bash scripts/build-gmp.sh
 bash scripts/build-fftw.sh
+bash scripts/build-zmq.sh         # libzmq (needs cmake + OHOS toolchain)
 bash scripts/build-cairo.sh       # needs pixman, libpng, freetype2, zlib
 bash scripts/build-geos.sh
 bash scripts/build-stubs.sh       # libmuslstubs, libbacktrace_stub
@@ -490,6 +492,55 @@ HarmonyOS it detects aarch64 but may not find all optimized paths.
 
 ---
 
+### ZeroMQ / libzmq (CMake with OHOS toolchain)
+
+libzmq is the C core of ZeroMQ, needed by the Jupyter protocol stack (jupyter_client, ipykernel). It's built as a shared library because Jupyter communicates across processes via TCP and the Python zmq shim (ctypes) loads `libzmq.so` at runtime.
+
+```bash
+cmake ../zeromq-4.3.5 \
+  -DCMAKE_TOOLCHAIN_FILE=/path/to/ohos/toolchain.cmake \
+  -DOHOS_ARCH=arm64-v8a \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DBUILD_SHARED=ON -DBUILD_STATIC=ON \
+  -DBUILD_TESTS=OFF -DBUILD_DRAFTS=OFF \
+  -DWITH_PERF_TOOL=OFF -DWITH_DOCS=OFF \
+  -DZMQ_BUILD_TCP=ON -DZMQ_BUILD_IPC=OFF \
+  -DENABLE_CURVE=OFF -DENABLE_WS=OFF
+```
+
+**Caveats:**
+- **OHOS CMake toolchain required.** `ohos.toolchain.cmake` is in the OHOS NDK at `native/build/cmake/`. Without it, cmake will try to use the host compiler and produce x86_64 code.
+- **Shared library is required.** The Python zmq_shim uses ctypes.CDLL to load `libzmq.so` directly. Static-only builds will not work for Jupyter.
+- **IPC disabled.** HarmonyOS seccomp blocks Unix domain sockets (`AF_UNIX`), so IPC transport cannot work. Only TCP is available.
+- **Curve (encryption) disabled.** No libsodium on OHOS. ZeroMQ's CURVE security mechanism is unavailable.
+- **WebSocket disabled.** No WS transport support. Only TCP works.
+- **C++ standard library dependency.** libzmq links libzmq against `libc++_shared.so`. Applications must `LD_PRELOAD` this library or link statically.
+
+### Python zmq_shim (Python ctypes wrapper)
+
+The zmq_shim is a pure-Python ctypes wrapper around `libzmq.so`, replacing the native Cython-based `pyzmq` which cannot be cross-compiled for OHOS. Source is maintained in `shims/zmq_shim/`.
+
+```python
+# The shim is installed as an editable pip package:
+pip install -e ~/.local/lib/harmonyos-shims/zmq_shim
+
+# zmq_shim provides the zmq module API compatible with pyzmq:
+import zmq
+ctx = zmq.Context()
+sock = ctx.socket(zmq.DEALER)
+```
+
+**Key compatibility fixes:**
+- `Socket.send()` accepts `copy=True, track=False, **kwargs` (required by ipykernel)
+- `Socket.recv()` supports `copy` and `track` parameters
+- `Poller` wraps `zmq_poll` via ctypes
+- AsyncIO support in `zmq.asyncio` (used by jupyter_client)
+
+**Caveats:**
+- **Not a full pyzmq replacement.** Only the subset of zmq features used by jupyter_client/ipykernel is implemented.
+- **Thread safety.** The ctypes `zmq_poll` call releases the GIL, but concurrent access to the same socket from multiple threads is not tested.
+- **Performance.** Being a ctypes wrapper, it's slower than Cython-based pyzmq. Not suitable for high-throughput messaging.
+
 ### libmuslstubs / libbacktrace_stub (hand-written, -nostdlib)
 
 These provide stub implementations for functions that R expects from musl
@@ -560,7 +611,11 @@ ohos-libs/
 │   ├── build-geos.sh      # GEOS (CMake)
 │   ├── build-gmp.sh       # GMP (Autotools)
 │   ├── build-ann.sh       # ANN (Makefile)
+│   ├── build-zmq.sh       # libzmq (CMake w/ OHOS toolchain)
 │   └── build-stubs.sh     # musl/backtrace stubs
+├── shims/
+│   └── zmq_shim/
+│       └── zmq/           # Python ctypes zmq wrapper source
 └── stubs/
     ├── musl_stubs.c     # stub for missing musl functions
     └── backtrace_stub.c # stub backtrace implementation
