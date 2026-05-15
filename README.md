@@ -30,6 +30,13 @@ breakage, `mktemp` incompatibility, seccomp-blocked `mkfifo`, and missing
 | [ZeroMQ (libzmq)](https://zeromq.org/) | 4.3.5 | CMake (OHOS toolchain) | — | libzmq.so, libzmq.a |
 | libmuslstubs | — | — | — | libmuslstubs.so |
 | libbacktrace_stub | — | — | — | libbacktrace_stub.so |
+| libuv_stub | — | — | — | libuv.so |
+| libextstubs | — | — | — | libextstubs.so |
+| libgmp_stub | — | — | — | libgmp.so |
+| libpng_stub | — | — | — | libpng16.so |
+| libjvm_stub | — | — | — | libjvm.so |
+| libV8_stub | — | — | — | libV8.so |
+| libgfortran_shim | — | — | — | libgfortran_shim.so |
 
 All static libs built with `-fPIC` so they can be linked into R shared
 objects.
@@ -68,7 +75,7 @@ bash scripts/build-fftw.sh
 bash scripts/build-zmq.sh         # libzmq (needs cmake + OHOS toolchain)
 bash scripts/build-cairo.sh       # needs pixman, libpng, freetype2, zlib
 bash scripts/build-geos.sh
-bash scripts/build-stubs.sh       # libmuslstubs, libbacktrace_stub
+bash scripts/build-stubs.sh       # all stub libraries (musl/backtrace/uv/jvm/ext/gmp/png/V8/gfortran)
 ```
 
 ## Configuration
@@ -541,38 +548,48 @@ sock = ctx.socket(zmq.DEALER)
 - **Thread safety.** The ctypes `zmq_poll` call releases the GIL, but concurrent access to the same socket from multiple threads is not tested.
 - **Performance.** Being a ctypes wrapper, it's slower than Cython-based pyzmq. Not suitable for high-throughput messaging.
 
-### libmuslstubs / libbacktrace_stub (hand-written, -nostdlib)
+### Stub libraries (hand-written, various link modes)
 
-These provide stub implementations for functions that R expects from musl
-libc but are absent on HarmonyOS.
+These provide stub implementations for functions that R and its packages
+expect but are absent on HarmonyOS. They allow packages to load even when
+the underlying system library isn't available.
 
-```c
-/* musl_stubs.c provides: */
-backtrace_create_state()  // R's error handler uses this
-backtrace_simple()        // R's stack trace on crash
-dl_iterate_phdr()         // R's dynamic library inspection
-```
-
-Compiled as shared objects with `-nostdlib`:
+| Stub | Source | Link mode | Provides | Needed by |
+|------|--------|-----------|----------|-----------|
+| libmuslstubs | `musl_stubs.c` | `-nostdlib` | backtrace, dl_iterate_phdr, ARM EHABI | R core (error handler, stack trace) |
+| libbacktrace_stub | `backtrace_stub.c` | `-nostdlib` | backtrace_create_state, backtrace_simple | R core (crash diagnostics) |
+| libuv_stub | `libuv_stub.c` | normal | uv_loop_*, uv_tcp_*, uv_fs_*, mutex, thread, timer | httpuv R package (HTTP/WebSocket server) |
+| libextstubs | `ext_stubs.c` | normal | curl_easy_*, SSL_*, EVP_*, zmq_* | curl/openssl/zmq R packages |
+| libgmp_stub | `gmp_stub.c` | normal | __gmpz_*, __gmpn_*, mpz_*, mpn_* | gmp R package (big integers) |
+| libpng_stub | `png_stub.c` | normal | png_create_*, png_set_*, png_write_* | Cairo R package (PNG backend) |
+| libjvm_stub | `jvm_stub.c` | `-nostdlib` | JNI_CreateJavaVM, JNI_GetDefaultJavaVMInitArgs, JNI_* function table | rJava R package |
+| libV8_stub | `v8_stub.c` | `-nostdlib` | V8_* entry points | V8 R package (JavaScript runtime) |
+| libgfortran_shim | `gfortran_stub.c` | `-nostdlib` | _gfortran_* additional symbols | R packages using Fortran code |
 
 ```bash
 $CC -shared -fPIC -nostdlib -o libmuslstubs.so musl_stubs.c
 $CC -shared -fPIC -nostdlib -o libbacktrace_stub.so backtrace_stub.c
+$CC -shared -fPIC -o libuv.so libuv_stub.c
+$CC -shared -fPIC -o libextstubs.so ext_stubs.c
+$CC -shared -fPIC -o libgmp.so gmp_stub.c
+$CC -shared -fPIC -o libpng16.so png_stub.c
+$CC -shared -fPIC -nostdlib -o libjvm.so jvm_stub.c
+$CC -shared -fPIC -nostdlib -o libV8.so v8_stub.c
+$CC -shared -fPIC -nostdlib -o libgfortran_shim.so gfortran_stub.c
 ```
 
-**Caveats:**
-- **Not real implementations.** These are empty functions that return 0 or
-  null. Features that depend on actual backtraces (R's `traceback()`,
-  debugger interaction) will silently produce no output.
-- **Fragile API dependency.** If a future version of R relies on additional
-  musl functions not currently stubbed, linking will fail with undefined
-  references. Adding a new stub is trivial (one function signature) but
-  requires recompilation.
-- **`-nostdlib` is critical.** Without it, clang injects references to
-  musl's `_start` and `__libc_start_main`, causing link errors.
-- **`dl_iterate_phdr` is especially stubby.** Some OHOS versions do have
-  this symbol but don't export it; the stub prevents link errors but
-  provides no actual ELF module enumeration.
+**Caveats (all stubs):**
+- **Not real implementations.** All functions return 0, NULL, or error codes.
+  Features that depend on actual OS/library functionality will silently
+  produce no output or return errors.
+- **R packages using these stubs will load** but fail at runtime when calling
+  the actual library functions. This is the expected tradeoff: package
+  namespace loading and attachment works, but feature calls return errors.
+- **`-nostdlib` stubs** (musl, backtrace, jvm, V8, gfortran) must avoid
+  any C library references. Normal stubs (uv, ext, gmp, png) can use libc.
+- **Fragile API dependency.** If a future version of a package relies on
+  additional symbols not currently stubbed, linking will fail. Adding a new
+  stub is trivial but requires recompilation.
 
 ## HarmonyOS Platform Quirks
 
@@ -612,11 +629,18 @@ ohos-libs/
 │   ├── build-gmp.sh       # GMP (Autotools)
 │   ├── build-ann.sh       # ANN (Makefile)
 │   ├── build-zmq.sh       # libzmq (CMake w/ OHOS toolchain)
-│   └── build-stubs.sh     # musl/backtrace stubs
+│   └── build-stubs.sh     # all stub libraries
 ├── shims/
 │   └── zmq_shim/
 │       └── zmq/           # Python ctypes zmq wrapper source
 └── stubs/
     ├── musl_stubs.c     # stub for missing musl functions
-    └── backtrace_stub.c # stub backtrace implementation
+    ├── backtrace_stub.c # stub backtrace implementation
+    ├── libuv_stub.c     # libuv stub (httpuv)
+    ├── ext_stubs.c      # combined curl/crypto/ssl/zmq stubs
+    ├── gmp_stub.c       # GMP stub (big integers)
+    ├── png_stub.c       # libpng stub (Cairo PNG backend)
+    ├── jvm_stub.c       # Java JNI stub (rJava)
+    ├── v8_stub.c        # V8 JavaScript stub
+    └── gfortran_stub.c  # gfortran additional symbols
 ```
