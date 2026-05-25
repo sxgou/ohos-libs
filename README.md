@@ -2,6 +2,10 @@
 
 System library cross-compilation suite for **aarch64 HarmonyOS (OpenHarmony)**.
 
+> **2026-05 更新**: [harmonybrew](https://github.com/Harmonybrew/homebrew-harmony) 现已支持大多数常用库，
+> 可直接 `brew install` 安装预编译的 bottle。本项目中标记为 **brew ✓** 的库不再需要手动交叉编译，
+> 保留的 build 脚本仅供参考。仅有 fftw、zeromq 和 stub 库仍需要本项目的构建流程。
+
 This project contains build scripts for C system libraries needed by R,
 Python, and other language runtimes on HarmonyOS. Every script handles
 the quirks of the OHOS platform: no `/tmp` (set `TMPDIR`), `umask 077`
@@ -10,24 +14,24 @@ breakage, `mktemp` incompatibility, seccomp-blocked `mkfifo`, and missing
 
 ## Libraries
 
-| Library | Ver | Build | Deps | Provides |
-|---------|-----|-------|------|----------|
-| [bzip2](https://sourceware.org/bzip2/) | 1.0.8 | Make | — | libbz2.a |
-| [xz (liblzma)](https://tukaani.org/xz/) | 5.6.3 | Autotools | — | liblzma.a |
-| [PCRE2](https://github.com/PCRE2Project/pcre2) | 10.44 | Autotools | — | libpcre2-{8,16,32,posix}.a |
-| [zlib.pc](https://zlib.net/) | 1.2.11 | — | (sysroot) | zlib.pc |
-| [OpenSSL](https://openssl.org/) | 3.0.15 | Configure | — | libssl.a, libcrypto.a |
-| [libcurl](https://curl.se/) | 8.11.0 | Autotools | OpenSSL | libcurl.a |
-| [libpng](http://libpng.org/) | 1.6.43 | CMake | zlib | libpng16.a |
-| [FreeType2](https://freetype.org/) | 2.13.3 | CMake | libpng, bzip2 | libfreetype.a |
-| [pixman](https://www.cairographics.org/) | 0.42.2 | Autotools | — | libpixman-1.a |
-| [Cairo](https://www.cairographics.org/) | 1.16.0 | Autotools | pixman, libpng, freetype2, zlib | libcairo.a |
-| [FFTW](https://fftw.org/) | 3.3.10 | Autotools | — | libfftw3.a, libfftw3f.a |
-| [GEOS](https://libgeos.org/) | 3.12.0 | CMake | — | libgeos.a, libgeos_c.a |
-| [GMP](https://gmplib.org/) | 6.3.0 | Autotools | — | libgmp.a |
-| [libxml2](https://gitlab.gnome.org/GNOME/libxml2) | 2.12.9 | CMake | — | libxml2.a |
-| [ANN](https://www.cs.umd.edu/~mount/ANN/) | 1.1.2 | Make | — | libann.a |
-| [ZeroMQ (libzmq)](https://zeromq.org/) | 4.3.5 | CMake (OHOS toolchain) | — | libzmq.so, libzmq.a |
+| Library | Ver | Build | Deps | Provides | Brew |
+|---------|-----|-------|------|----------|------|
+| [bzip2](https://sourceware.org/bzip2/) | 1.0.8 | Make | — | libbz2.a | ✓ |
+| [xz (liblzma)](https://tukaani.org/xz/) | 5.6.3 | Autotools | — | liblzma.a | ✓ |
+| [PCRE2](https://github.com/PCRE2Project/pcre2) | 10.44 | Autotools | — | libpcre2-{8,16,32,posix}.a | ✓ |
+| [zlib.pc](https://zlib.net/) | 1.2.11 | — | (sysroot) | zlib.pc | ✓ |
+| [OpenSSL](https://openssl.org/) | 3.0.15 | Configure | — | libssl.a, libcrypto.a | ✓ |
+| [libcurl](https://curl.se/) | 8.11.0 | Autotools | OpenSSL | libcurl.a | ✓ |
+| [libpng](http://libpng.org/) | 1.6.43 | CMake | zlib | libpng16.a | ✓ |
+| [FreeType2](https://freetype.org/) | 2.13.3 | CMake | libpng, bzip2 | libfreetype.a | ✓ |
+| [pixman](https://www.cairographics.org/) | 0.42.2 | Autotools | — | libpixman-1.a | ✓ |
+| [Cairo](https://www.cairographics.org/) | 1.16.0 | Autotools | pixman, libpng, freetype2, zlib | libcairo.a | ✓ |
+| [GEOS](https://libgeos.org/) | 3.12.0 | CMake | — | libgeos.a, libgeos_c.a | ✓ |
+| [GMP](https://gmplib.org/) | 6.3.0 | Autotools | — | libgmp.a | ✓ |
+| [libxml2](https://gitlab.gnome.org/GNOME/libxml2) | 2.12.9 | CMake | — | libxml2.a | ✓ |
+| [ANN](https://www.cs.umd.edu/~mount/ANN/) | 1.1.2 | Make | — | libann.a | |
+| [FFTW](https://fftw.org/) | 3.3.10 | Autotools | — | libfftw3.a, libfftw3f.a | |
+| [ZeroMQ (libzmq)](https://zeromq.org/) | 4.3.5 | CMake (OHOS toolchain) | — | libzmq.so, libzmq.a | |
 | libmuslstubs | — | — | — | libmuslstubs.so |
 | libbacktrace_stub | — | — | — | libbacktrace_stub.so |
 | libuv_stub | — | — | — | libuv.so |
@@ -51,6 +55,18 @@ objects.
 
 ## Quick Start
 
+### 推荐方式 — 通过 harmonybrew 安装
+
+brew 已支持大多数库，一键安装：
+
+```bash
+brew install bzip2 xz pcre2 openssl curl libpng freetype cairo geos gmp libxml2
+```
+
+### 手动构建（仅 brew 未覆盖的库）
+
+对于 fftw、zeromq 和 stub 库，使用本项目的构建脚本：
+
 ```bash
 git clone https://github.com/sxgou/ohos-libs.git
 cd ohos-libs
@@ -59,24 +75,13 @@ cd ohos-libs
 export SYSROOT=/path/to/ohos/native/sysroot
 export PREFIX=$HOME/.local/ohos-libs
 
-# Build everything
-bash build-all.sh
-```
-
-Or build individually:
-
-```bash
-bash scripts/build-bzip2.sh
-bash scripts/build-xz.sh
-bash scripts/build-pcre2.sh
-bash scripts/build-pixman.sh
-bash scripts/build-gmp.sh
+# 构建 brew 未覆盖的库
 bash scripts/build-fftw.sh
 bash scripts/build-zmq.sh         # libzmq (needs cmake + OHOS toolchain)
-bash scripts/build-cairo.sh       # needs pixman, libpng, freetype2, zlib
-bash scripts/build-geos.sh
 bash scripts/build-stubs.sh       # all stub libraries (musl/backtrace/uv/jvm/ext/gmp/png/V8/gfortran)
 ```
+
+旧版 build 脚本（对应 brew 已支持的库）保留在 `scripts/` 中以供参考。
 
 ## Configuration
 
